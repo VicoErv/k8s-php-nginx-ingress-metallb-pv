@@ -1,0 +1,134 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+  labels:
+    app: backend-app
+    service: backend-service
+spec:
+  ports:
+    - port: 9000
+      targetPort: 9000
+      name: fastcgi
+  selector:
+    app: backend-app
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-app
+  labels:
+    app: backend-app
+spec:
+  selector:
+    matchLabels:
+      app: backend-app
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: backend-app
+    spec:
+      volumes:
+        - name: test-volume
+          persistentVolumeClaim:
+            claimName: task-pv-claim
+      containers:
+        - name: backend-app
+          image: bitnami/php-fpm:latest
+          ports:
+            - containerPort: 9000
+              name: fastcgi
+          volumeMounts:
+            - mountPath: /app
+              name: test-volume
+              mountPropagation: HostToContainer
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxy-service
+  labels:
+    app: proxy
+    service: proxy-service
+spec:
+  ports:
+    - port: 80
+      targetPort: 80
+      name: http
+  selector:
+    app: proxy
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: proxy-conf
+data:
+  default.conf: |
+    server {
+        listen 80;
+        server_name php.test;
+        root /app/;
+
+        add_header X-Frame-Options "SAMEORIGIN";
+        add_header X-XSS-Protection "1; mode=block";
+        add_header X-Content-Type-Options "nosniff";
+
+        index index.php;
+
+        charset utf-8;
+
+        location = /favicon.ico { access_log off; log_not_found off; }
+        location = /robots.txt  { access_log off; log_not_found off; }
+
+        error_page 404 /index.php;
+
+        location / {
+            try_files $uri $uri/ /index.php?$query_string;
+        }
+      
+        location ~ \.php$ {
+            fastcgi_pass backend-service:9000;
+            fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+            include fastcgi_params;
+        }
+      
+        location ~ /\.(?!well-known).* {
+            deny all;
+        }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy
+  labels:
+    app: proxy
+spec:
+  selector:
+    matchLabels:
+      app: proxy
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: proxy
+    spec:
+      containers:
+        - name: proxy
+          image: nginx
+          ports:
+            - containerPort: 80
+              name: http
+          volumeMounts:
+            - mountPath: /etc/nginx/conf.d/
+              name: proxy-conf
+              readOnly: true
+      volumes:
+        - name: proxy-conf
+          configMap:
+            name: proxy-conf
+            items:
+              - key: default.conf
+                path: default.conf
